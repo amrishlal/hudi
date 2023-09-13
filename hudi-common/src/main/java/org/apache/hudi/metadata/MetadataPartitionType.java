@@ -28,7 +28,8 @@ public enum MetadataPartitionType {
   FILES(HoodieTableMetadataUtil.PARTITION_NAME_FILES, "files-"),
   COLUMN_STATS(HoodieTableMetadataUtil.PARTITION_NAME_COLUMN_STATS, "col-stats-"),
   BLOOM_FILTERS(HoodieTableMetadataUtil.PARTITION_NAME_BLOOM_FILTERS, "bloom-filters-"),
-  RECORD_INDEX(HoodieTableMetadataUtil.PARTITION_NAME_RECORD_INDEX, "record-index-");
+  RECORD_INDEX(HoodieTableMetadataUtil.PARTITION_NAME_RECORD_INDEX, "record-index-"),
+  SECONDARY_RECORD_INDEX(HoodieTableMetadataUtil.PARTITION_NAME_SECONDARY_RECORD_INDEX, "secondary-record-index-");
 
   // Partition path in metadata table.
   private final String partitionPath;

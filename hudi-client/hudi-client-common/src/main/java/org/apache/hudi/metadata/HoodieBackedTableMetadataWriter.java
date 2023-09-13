@@ -218,6 +218,10 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
     if (dataWriteConfig.isRecordIndexEnabled() || dataMetaClient.getTableConfig().isMetadataPartitionAvailable(MetadataPartitionType.RECORD_INDEX)) {
       this.enabledPartitionTypes.add(MetadataPartitionType.RECORD_INDEX);
     }
+    if (dataWriteConfig.isSecondaryRecordIndexEnabled() || dataMetaClient.getTableConfig().isMetadataPartitionAvailable(MetadataPartitionType.SECONDARY_RECORD_INDEX)) {
+      // SRLI partition name is of the form <key>_srli
+      this.enabledPartitionTypes.add(MetadataPartitionType.SECONDARY_RECORD_INDEX);
+    }
   }
 
   protected abstract void initRegistry();
@@ -419,6 +423,9 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
           case RECORD_INDEX:
             fileGroupCountAndRecordsPair = initializeRecordIndexPartition();
             break;
+          case SECONDARY_RECORD_INDEX:
+            fileGroupCountAndRecordsPair = initializeSecondaryRecordIndexPartition();
+            break;
           default:
             throw new HoodieMetadataException("Unsupported MDT partition type: " + partitionType);
         }
@@ -526,11 +533,89 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
     return Pair.of(fileGroupCount, records);
   }
 
+  private Pair<Integer, HoodieData<HoodieRecord>> initializeSecondaryRecordIndexPartition() throws IOException {
+    final HoodieMetadataFileSystemView fsView = new HoodieMetadataFileSystemView(dataMetaClient,
+        dataMetaClient.getActiveTimeline(), metadata);
+
+    // Collect the list of latest base files present in each partition
+    List<String> partitions = metadata.getAllPartitionPaths();
+    fsView.loadAllPartitions();
+    final List<Pair<String, HoodieBaseFile>> partitionBaseFilePairs = new ArrayList<>();
+    for (String partition : partitions) {
+      partitionBaseFilePairs.addAll(fsView.getLatestBaseFiles(partition)
+          .map(basefile -> Pair.of(partition, basefile)).collect(Collectors.toList()));
+    }
+
+    LOG.info("Initializing secondary record index from " + partitionBaseFilePairs.size() + " base files in "
+        + partitions.size() + " partitions");
+
+    String secondaryRecordIndexColumnName = dataWriteConfig.getSecondaryRecordIndexColumnName();
+
+    // Collect record keys from the files in parallel
+    HoodieData<HoodieRecord> records = readSecondaryRecordKeysFromBaseFiles(engineContext, partitionBaseFilePairs, secondaryRecordIndexColumnName, false);
+    records.persist("MEMORY_AND_DISK_SER");
+    final long recordCount = records.count();
+
+    // Initialize the file groups
+    final int fileGroupCount = HoodieTableMetadataUtil.estimateFileGroupCount(MetadataPartitionType.RECORD_INDEX, recordCount,
+        RECORD_INDEX_AVERAGE_RECORD_SIZE, dataWriteConfig.getRecordIndexMinFileGroupCount(),
+        dataWriteConfig.getRecordIndexMaxFileGroupCount(), dataWriteConfig.getRecordIndexGrowthFactor(),
+        dataWriteConfig.getRecordIndexMaxFileGroupSizeBytes());
+
+    LOG.info(String.format("Initializing record index with %d mappings and %d file groups.", recordCount, fileGroupCount));
+    return Pair.of(fileGroupCount, records);
+  }
+
   /**
    * Read the record keys from base files in partitions and return records.
    */
   private HoodieData<HoodieRecord> readRecordKeysFromBaseFiles(HoodieEngineContext engineContext,
                                                                List<Pair<String, HoodieBaseFile>> partitionBaseFilePairs,
+                                                               boolean forDelete) {
+    if (partitionBaseFilePairs.isEmpty()) {
+      return engineContext.emptyHoodieData();
+    }
+
+    engineContext.setJobStatus(this.getClass().getSimpleName(), "Record Index: reading record keys from " + partitionBaseFilePairs.size() + " base files");
+    final int parallelism = Math.min(partitionBaseFilePairs.size(), dataWriteConfig.getMetadataConfig().getRecordIndexMaxParallelism());
+    return engineContext.parallelize(partitionBaseFilePairs, parallelism).flatMap(partitionAndBaseFile -> {
+      final String partition = partitionAndBaseFile.getKey();
+      final HoodieBaseFile baseFile = partitionAndBaseFile.getValue();
+      final String filename = baseFile.getFileName();
+      Path dataFilePath = new Path(dataWriteConfig.getBasePath(), partition + Path.SEPARATOR + filename);
+
+      final String fileId = baseFile.getFileId();
+      final String instantTime = baseFile.getCommitTime();
+      HoodieFileReader reader = HoodieFileReaderFactory.getReaderFactory(HoodieRecord.HoodieRecordType.AVRO).getFileReader(hadoopConf.get(), dataFilePath);
+      ClosableIterator<String> recordKeyIterator = reader.getRecordKeyIterator();
+
+      return new ClosableIterator<HoodieRecord>() {
+        @Override
+        public void close() {
+          recordKeyIterator.close();
+        }
+
+        @Override
+        public boolean hasNext() {
+          return recordKeyIterator.hasNext();
+        }
+
+        @Override
+        public HoodieRecord next() {
+          return forDelete
+              ? HoodieMetadataPayload.createRecordIndexDelete(recordKeyIterator.next())
+              : HoodieMetadataPayload.createRecordIndexUpdate(recordKeyIterator.next(), partition, fileId, instantTime, 0);
+        }
+      };
+    });
+  }
+
+  /**
+   * Read the secondary record keys from base files in partitions and return records.
+   */
+  private HoodieData<HoodieRecord> readSecondaryRecordKeysFromBaseFiles(HoodieEngineContext engineContext,
+                                                               List<Pair<String, HoodieBaseFile>> partitionBaseFilePairs,
+                                                               String secondaryRecordIndexColumnName,
                                                                boolean forDelete) {
     if (partitionBaseFilePairs.isEmpty()) {
       return engineContext.emptyHoodieData();
@@ -913,9 +998,20 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
 
       // Updates for record index are created by parsing the WriteStatus which is a hudi-client object. Hence, we cannot yet move this code
       // to the HoodieTableMetadataUtil class in hudi-common.
-      HoodieData<HoodieRecord> updatesFromWriteStatuses = getRecordIndexUpdates(writeStatus);
+      HoodieData<HoodieRecord> updatesFromWriteStatuses = getRecordIndexUpdates(writeStatus, MetadataPartitionType.RECORD_INDEX);
       HoodieData<HoodieRecord> additionalUpdates = getRecordIndexAdditionalUpdates(updatesFromWriteStatuses, commitMetadata);
+      //      List<HoodieRecord> rliRecords = updatesFromWriteStatuses.union(additionalUpdates).collectAsList();
+      //      partitionToRecordMap.put(MetadataPartitionType.RECORD_INDEX, HoodieListData.eager(rliRecords));
       partitionToRecordMap.put(MetadataPartitionType.RECORD_INDEX, updatesFromWriteStatuses.union(additionalUpdates));
+
+      HoodieData<HoodieRecord> secondaryUpdatesFromWriteStatuses = getRecordIndexUpdates(writeStatus, MetadataPartitionType.SECONDARY_RECORD_INDEX);
+      HoodieData<HoodieRecord> secondaryAdditionalUpdates = getRecordIndexAdditionalUpdates(updatesFromWriteStatuses, commitMetadata);
+      //      List<HoodieRecord> srliRecords = secondaryUpdatesFromWriteStatuses.union(secondaryAdditionalUpdates).collectAsList();
+      //      partitionToRecordMap.put(MetadataPartitionType.SECONDARY_RECORD_INDEX, HoodieListData.eager(srliRecords));
+      HoodieData<HoodieRecord> combinedUpdatesFromWriteStatus = secondaryUpdatesFromWriteStatuses.union(secondaryAdditionalUpdates);
+      List<HoodieRecord> srliRecords = combinedUpdatesFromWriteStatus.collectAsList();
+      LOG.warn("XXXX: srliRecords: " + srliRecords.toString());
+      partitionToRecordMap.put(MetadataPartitionType.SECONDARY_RECORD_INDEX, secondaryUpdatesFromWriteStatuses.union(secondaryAdditionalUpdates));
 
       return partitionToRecordMap;
     });
@@ -1401,7 +1497,7 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
    *
    * @param writeStatuses {@code WriteStatus} from the write operation
    */
-  private HoodieData<HoodieRecord> getRecordIndexUpdates(HoodieData<WriteStatus> writeStatuses) {
+  private HoodieData<HoodieRecord> getRecordIndexUpdates(HoodieData<WriteStatus> writeStatuses, MetadataPartitionType partitionType) {
     HoodiePairData<String, HoodieRecordDelegate> recordKeyDelegatePairs = null;
     // if update partition path is true, chances that we might get two records (1 delete in older partition and 1 insert to new partition)
     // and hence we might have to do reduce By key before ingesting to RLI partition.
@@ -1450,12 +1546,15 @@ public abstract class HoodieBackedTableMetadataWriter<I> implements HoodieTableM
               }
             }
 
-            hoodieRecord = HoodieMetadataPayload.createRecordIndexUpdate(
-                recordDelegate.getRecordKey(), recordDelegate.getPartitionPath(),
-                newLocation.get().getFileId(), newLocation.get().getInstantTime(), dataWriteConfig.getWritesFileIdEncoding());
+            hoodieRecord = partitionType == MetadataPartitionType.RECORD_INDEX
+                ? HoodieMetadataPayload.createRecordIndexUpdate(recordDelegate.getRecordKey(), recordDelegate.getPartitionPath(), newLocation.get().getFileId(), newLocation.get().getInstantTime(),
+                    dataWriteConfig.getWritesFileIdEncoding()) :
+                HoodieMetadataPayload.createSecondaryRecordIndexUpdate(recordDelegate.getRecordKey(), recordDelegate.getPartitionPath(), newLocation.get().getFileId(),
+                    newLocation.get().getInstantTime(), dataWriteConfig.getWritesFileIdEncoding());
           } else {
             // Delete existing index for a deleted record
-            hoodieRecord = HoodieMetadataPayload.createRecordIndexDelete(recordDelegate.getRecordKey());
+            hoodieRecord = partitionType == MetadataPartitionType.RECORD_INDEX ? HoodieMetadataPayload.createRecordIndexDelete(recordDelegate.getRecordKey()) :
+                HoodieMetadataPayload.createSecondaryRecordIndexDelete(recordDelegate.getRecordKey());
           }
           return hoodieRecord;
         })

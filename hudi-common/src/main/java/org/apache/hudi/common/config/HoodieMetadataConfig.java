@@ -283,6 +283,20 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .sinceVersion("0.14.0")
       .withDocumentation("Maximum parallelism to use when initializing Record Index.");
 
+  public static final ConfigProperty<Boolean> SECONDARY_RECORD_INDEX_ENABLE_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".secondary.record.index.enable")
+      .defaultValue(false)
+      .markAdvanced()
+      .sinceVersion("1.0.0")
+      .withDocumentation("Create the HUDI Secondary Record Index within the Metadata Table");
+
+  public static final ConfigProperty<String> SECONDARY_RECORD_INDEX_COLUMN = ConfigProperty
+      .key(METADATA_PREFIX + ".secondary.record.index.columns")
+      .defaultValue("")
+      .markAdvanced()
+      .sinceVersion("1.0.0")
+      .withDocumentation("List of columns for secondary record index, one column per secondary index.");
+
   public static final ConfigProperty<Long> MAX_READER_MEMORY_PROP = ConfigProperty
       .key(METADATA_PREFIX + ".max.reader.memory")
       .defaultValue(1024 * 1024 * 1024L)
@@ -430,6 +444,14 @@ public final class HoodieMetadataConfig extends HoodieConfig {
 
   public int getRecordIndexMaxFileGroupSizeBytes() {
     return getInt(RECORD_INDEX_MAX_FILE_GROUP_SIZE_BYTES_PROP);
+  }
+
+  public boolean enableSecondaryRecordIndex() {
+    return enabled() && getBoolean(SECONDARY_RECORD_INDEX_ENABLE_PROP);
+  }
+
+  public String getSecondaryRecordIndexColumnName() {
+    return enabled() ? getString(SECONDARY_RECORD_INDEX_COLUMN) : null;
   }
 
   public String getSplliableMapDir() {

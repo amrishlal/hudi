@@ -25,6 +25,7 @@ import org.apache.hudi.avro.model.HoodieRecordIndexInfo;
 import org.apache.hudi.avro.model.HoodieRestoreMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackPlan;
+import org.apache.hudi.avro.model.HoodieSecondaryRecordIndexInfo;
 import org.apache.hudi.common.bloom.BloomFilter;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.data.HoodieAccumulator;
@@ -123,6 +124,7 @@ public class HoodieTableMetadataUtil {
   public static final String PARTITION_NAME_COLUMN_STATS = "column_stats";
   public static final String PARTITION_NAME_BLOOM_FILTERS = "bloom_filters";
   public static final String PARTITION_NAME_RECORD_INDEX = "record_index";
+  public static final String PARTITION_NAME_SECONDARY_RECORD_INDEX = "secondary_record_index";
 
   // Suffix to use for various operations on MDT
   private enum OperationSuffix {
@@ -1658,6 +1660,20 @@ public class HoodieTableMetadataUtil {
         recordIndexInfo.getInstantTime());
   }
 
+  /**
+   * Gets the location from secondary record index content.
+   *
+   * @param secondaryRecordIndexInfo {@link HoodieSecondaryRecordIndexInfo} instance.
+   * @return {@link HoodieRecordGlobalLocation} containing the location.
+   */
+  public static HoodieRecordGlobalLocation getLocationFromRecordIndexInfo(HoodieSecondaryRecordIndexInfo secondaryRecordIndexInfo) {
+    return getLocationFromRecordIndexInfo(
+        secondaryRecordIndexInfo.getPartitionName(), secondaryRecordIndexInfo.getFileIdEncoding(),
+        secondaryRecordIndexInfo.getFileIdHighBits(), secondaryRecordIndexInfo.getFileIdLowBits(),
+        secondaryRecordIndexInfo.getFileIndex(), secondaryRecordIndexInfo.getFileId(),
+        secondaryRecordIndexInfo.getInstantTime());
+  }
+  
   /**
    * Gets the location from record index content.
    * Note that, a UUID based fileId is stored as 3 pieces in record index (fileIdHighBits,

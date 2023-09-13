@@ -2405,6 +2405,14 @@ public class HoodieWriteConfig extends HoodieConfig {
     return metadataConfig.getRecordIndexMaxFileGroupSizeBytes();
   }
 
+  public boolean isSecondaryRecordIndexEnabled() {
+    return metadataConfig.enableSecondaryRecordIndex();
+  }
+
+  public String getSecondaryRecordIndexColumnName() {
+    return metadataConfig.getSecondaryRecordIndexColumnName();
+  }
+
   /**
    * Hoodie Client Lock Configs.
    *

@@ -53,6 +53,15 @@ public interface HoodieFileReader<T> extends AutoCloseable {
     return getRecordIterator(readerSchema, readerSchema);
   }
 
+  default ClosableIterator<HoodieRecord<T>> getRecordFieldIterator(String fieldName) throws IOException {
+    Schema recordSchema = getSchema();
+    Schema.Field field = recordSchema.getField(fieldName);
+    if (field == null) {
+      throw new IOException("Field " + fieldName + " does not exist in table record schema");
+    }
+    return getRecordIterator(recordSchema, field.schema());
+  }
+
   default ClosableIterator<HoodieRecord<T>> getRecordIterator() throws IOException {
     return getRecordIterator(getSchema());
   }
